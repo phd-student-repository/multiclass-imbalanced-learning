@@ -1,0 +1,417 @@
+"""
+CWBagging: Class-Weighted Bagging for Multiclass Imbalanced Learning
+
+This script evaluates the CWBagging ensemble method using multiple
+datasets with repeated Stratified K-Fold cross validation.
+
+Main characteristics:
+- Custom bootstrap sampling
+- Random oversampling during early ensemble iterations
+- Class-weighted soft voting
+- Evaluation using AvAcc, G-Mean, and MAUC
+- Runtime measurement
+
+Author: Muhammad Fachrie
+"""
+
+import numpy as np
+import pandas as pd
+import time
+import warnings
+import random
+
+from collections import Counter
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import confusion_matrix, roc_auc_score
+from sklearn.preprocessing import LabelEncoder
+
+from imblearn.over_sampling import RandomOverSampler
+
+warnings.filterwarnings("ignore")
+
+
+# =========================================================
+# UTILITY FUNCTIONS
+# =========================================================
+
+def calculate_class_weights(y):
+    """
+    Compute inverse-frequency class weights.
+
+    Parameters
+    ----------
+    y : array-like
+        Class labels
+
+    Returns
+    -------
+    dict
+        Mapping class -> weight
+    """
+    n_samples = len(y)
+    n_classes = len(set(y))
+    counts = Counter(y)
+
+    weights = {
+        cls: n_samples / (n_classes * count)
+        for cls, count in counts.items()
+    }
+
+    return weights
+
+
+# =========================================================
+# CUSTOM BOOTSTRAP SAMPLING
+# =========================================================
+
+def custom_bootstrap(X, y):
+    """
+    Generate a bootstrap sample by drawing samples
+    independently for each class.
+
+    The number of samples drawn per class is randomly
+    selected between 2 and half of the largest class size.
+
+    Returns
+    -------
+    X_boot, y_boot
+    """
+
+    unique_classes = np.unique(y)
+
+    class_counts = {
+        cls: np.sum(y == cls)
+        for cls in unique_classes
+    }
+
+    largest_class_size = max(class_counts.values())
+    threshold = largest_class_size // 2
+
+    m = np.random.randint(2, threshold) if threshold > 2 else 2
+
+    indices = []
+
+    for cls in unique_classes:
+
+        class_idx = np.where(y == cls)[0]
+
+        if len(class_idx) == 0:
+            continue
+
+        sample_size = min(m, len(class_idx))
+
+        sampled = np.random.choice(
+            class_idx,
+            size=sample_size,
+            replace=True
+        )
+
+        indices.extend(sampled)
+
+    indices = np.array(indices)
+
+    return X[indices], y[indices]
+
+
+# =========================================================
+# CLASS-WEIGHTED SOFT VOTING
+# =========================================================
+
+def soft_voting_with_weights(models, X, class_weight_list, threshold=0):
+    """
+    Aggregate predictions from ensemble members using
+    confidence-weighted voting.
+
+    Each prediction is weighted by:
+        confidence * class_weight
+
+    Parameters
+    ----------
+    models : list
+        Trained classifiers
+
+    X : array
+        Test samples
+
+    class_weight_list : list
+        Class weight dictionaries
+
+    threshold : float
+        Minimum confidence threshold
+
+    Returns
+    -------
+    probabilities : ndarray
+        Final probability distribution
+    """
+
+    n_samples = X.shape[0]
+    n_classes = models[0].n_classes_
+
+    weighted_votes = np.zeros((n_samples, n_classes))
+
+    for model, weights in zip(models, class_weight_list):
+
+        proba = model.predict_proba(X)
+
+        preds = np.argmax(proba, axis=1)
+        conf = np.max(proba, axis=1)
+
+        for i in range(n_samples):
+
+            cls = preds[i]
+
+            if conf[i] >= threshold and cls in weights:
+                weighted_votes[i, cls] += conf[i] * weights[cls]
+
+    row_sum = weighted_votes.sum(axis=1, keepdims=True)
+    row_sum[row_sum == 0] = 1
+
+    return weighted_votes / row_sum
+
+
+# =========================================================
+# PERFORMANCE METRICS
+# =========================================================
+
+def calculate_metrics(y_true, y_pred, n_classes):
+    """
+    Compute evaluation metrics for multiclass classification.
+
+    Metrics:
+    - Average Accuracy (AvAcc)
+    - Geometric Mean (G-Mean)
+    """
+
+    cm = confusion_matrix(y_true, y_pred, labels=np.arange(n_classes))
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+
+        recall = np.diag(cm) / np.sum(cm, axis=1)
+        recall = np.nan_to_num(recall)
+
+    avacc = np.mean(recall)
+
+    gmean = (
+        np.prod(recall) ** (1 / n_classes)
+        if np.all(recall > 0)
+        else 0.0
+    )
+
+    return avacc, gmean
+
+
+# =========================================================
+# EXPERIMENT SETTINGS
+# =========================================================
+
+#-----------------------------------
+# for 5-fold cross validation, use:
+# ---> ecoli-5fold.csv, 
+# ---> automobile-5fold.csv,
+# ---> lymphography-5fold.csv,
+# ---> shuttle-5fold.csv
+#-----------------------------------
+datasets = [
+    "winequality-red.csv",
+    "yeast.csv",
+    "glass.csv",
+    "ecoli.csv",
+    "dermatology.csv",
+    "solar-flare.csv",
+    "automobile.csv",
+    "contraceptive.csv",
+    "balance-scale.csv",
+    "led7digit.csv",
+    "lymphography.csv",
+    "hayes-roth.csv",
+    "cleveland.csv",
+    "new-thyroid.csv",
+    "page-blocks.csv",
+    "wine.csv",
+    "thyroid.csv",
+    "zoo.csv",
+    "car.csv",
+    "shuttle.csv"
+]
+
+#------------------------------
+# for 2-fold cross validation
+#------------------------------
+random_seeds = [123, 1000, 14, 0, 65, 456, 321, 11, 56, 100, 999, 431, 648, 101, 111, 333, 5000, 2, 665, 9, 518, 222, 5, 20, 1]
+
+#------------------------------
+# for 5-fold cross validation
+#------------------------------
+# random_seeds = [123, 1000, 14, 0, 65, 456, 321, 11, 56, 100]
+
+n_repeats = 25
+n_folds = 2
+n_estimators = 100
+
+
+# =========================================================
+# MAIN EXPERIMENT LOOP
+# =========================================================
+
+results = []
+
+for dataset in datasets:
+
+    print(f"\nProcessing dataset: {dataset}")
+
+    df = pd.read_csv(dataset)
+
+    X = df.iloc[:, :-1].values
+    y = df.iloc[:, -1].values
+
+    y = LabelEncoder().fit_transform(y)
+
+    n_classes = len(np.unique(y))
+
+    avacc_scores = []
+    gmean_scores = []
+    mauc_scores = []
+
+    train_times = []
+    test_times = []
+
+    for r in range(n_repeats):
+
+        skf = StratifiedKFold(
+            n_splits=n_folds,
+            shuffle=True,
+            random_state=random_seeds[r]
+        )
+
+        for train_idx, test_idx in skf.split(X, y):
+
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+
+            models = []
+            weight_list = []
+
+            fold_train_time = 0
+
+            # ---------------------------------------------------------
+            # Calculating Class Weights within the entire training set
+            # ---------------------------------------------------------
+            class_weights_train = calculate_class_weights(y_train)
+
+            # -----------------------------
+            # Training Phase
+            # -----------------------------
+
+            for est in range(n_estimators):
+
+                X_bs, y_bs = custom_bootstrap(X_train, y_train)
+
+                if len(np.unique(y_bs)) < n_classes:
+                    continue
+
+                # -------------------------------------------------------
+                # Calculating Class Weights within the current bootstrap
+                # -------------------------------------------------------
+                weights = calculate_class_weights(y_bs)
+
+                common = weights.keys() & class_weights_train.keys()
+
+                # -----------------------------
+                # Weight Capping
+                # -----------------------------
+                weights = {
+                    c: min(weights[c], class_weights_train[c])
+                    for c in common
+                }
+
+                if est < n_estimators * 0.5:
+                    
+                    # -----------------------------------------
+                    # Oversampling on the first 50% bootstrap
+                    # -----------------------------------------
+                    ros = RandomOverSampler()
+                    X_bs, y_bs = ros.fit_resample(X_bs, y_bs)
+
+                model = DecisionTreeClassifier()
+
+                start_fit = time.time()
+
+                model.fit(X_bs, y_bs)
+
+                end_fit = time.time()
+
+                fold_train_time += end_fit - start_fit
+
+                models.append(model)
+                weight_list.append(weights)
+
+            train_times.append(fold_train_time)
+
+            # -----------------------------
+            # Testing Phase
+            # -----------------------------
+
+            start_test = time.time()
+
+            proba = soft_voting_with_weights(
+                models,
+                X_test,
+                weight_list
+            )
+
+            pred = np.argmax(proba, axis=1)
+
+            end_test = time.time()
+
+            test_times.append(
+                (end_test - start_test) / len(y_test)
+            )
+
+            # -----------------------------
+            # Evaluation
+            # -----------------------------
+
+            avacc, gmean = calculate_metrics(
+                y_test,
+                pred,
+                n_classes
+            )
+
+            avacc_scores.append(avacc)
+            gmean_scores.append(gmean)
+
+    results.append({
+
+        "Dataset": dataset,
+
+        "AvAcc_mean": np.mean(avacc_scores),
+        "AvAcc_std": np.std(avacc_scores),
+
+        "GMean_mean": np.mean(gmean_scores),
+        "GMean_std": np.std(gmean_scores),
+
+        "TrainTime_mean": np.mean(train_times),
+        "TrainTime_std": np.std(train_times),
+
+        "TestTime_mean": np.mean(test_times),
+        "TestTime_std": np.std(test_times)
+
+    })
+
+    print(f"AvAcc : {np.mean(avacc_scores):.4f} ± {np.std(avacc_scores):.4f}")
+    print(f"GMean : {np.mean(gmean_scores):.4f} ± {np.std(gmean_scores):.4f}")
+
+# =========================================================
+# SAVE RESULTS
+# =========================================================
+
+results_df = pd.DataFrame(results)
+
+output_file = "CWBagging_results.csv"
+
+results_df.to_csv(output_file, index=False)
+
+print("\nResults saved to:", output_file)
