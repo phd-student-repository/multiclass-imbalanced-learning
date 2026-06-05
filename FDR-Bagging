@@ -21,8 +21,8 @@ logging.disable(logging.INFO)
 
 def calculate_metrics(y_test, y_pred, y_proba, n_classes):
     """
-    Calculates classification performance metrics including Average Accuracy (AvAcc),
-    Geometric Mean (G-Mean), and Macro Area Under the ROC Curve (MAUC).
+    Calculates classification performance metrics including Average Accuracy (AvAcc) and
+    Geometric Mean (G-Mean).
 
     Parameters:
     -----------
@@ -47,13 +47,8 @@ def calculate_metrics(y_test, y_pred, y_proba, n_classes):
         
     avacc = np.mean(recall_per_class)
     gmean = np.prod(recall_per_class)**(1/n_classes) if np.all(recall_per_class > 0) else 0.0
-    
-    try:
-        mauc = roc_auc_score(pd.get_dummies(y_test), y_proba, average='macro', multi_class='ovr')
-    except:
-        mauc = 0.0
-        
-    return avacc, gmean, mauc
+            
+    return avacc, gmean
 
 
 def get_major_minor_classes(y):
@@ -244,12 +239,10 @@ def determine_resampling_method(X, y):
     
     if avg_fdr < alpha:
         depth_ratio = 1.5
-        feature_ratio = 'sqrt'
-        return resampling_RUS, depth_ratio, feature_ratio, avg_fdr
+        return resampling_RUS, depth_ratio, avg_fdr
     else:
         depth_ratio = 2.0
-        feature_ratio = 1.0
-        return resampling_ROS, depth_ratio, feature_ratio, avg_fdr
+        return resampling_ROS, depth_ratio, avg_fdr
 
 
 def majority_voting(models, X):
@@ -433,7 +426,7 @@ for dataset in list_datasets:
     n_classes = len(np.unique(y_encoded))
     n_features = X.shape[1]
 
-    avacc_list, mgm_list, mauc_list = [], [], []
+    avacc_list, mgm_list= [], []
     diversity_list, base_gmean_list, base_avacc_list = [], [], []
     total_train_time_list, avg_pred_time_list = [], []
         
@@ -445,7 +438,7 @@ for dataset in list_datasets:
         skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=list_seed[idx_seed])
         idx_seed += 1
 
-        avacc_scores, mgm_scores, mauc_scores = [], [], []
+        avacc_scores, mgm_scores = [], []
         total_train_time_fold, avg_pred_time_fold = [], []
         
         for train_index, test_index in skf.split(X, y_encoded):         
@@ -455,7 +448,7 @@ for dataset in list_datasets:
             y_train, y_test = y_encoded[train_index], y_encoded[test_index]
 
             # Select resampling strategy based on training data characteristics (FDR)
-            resample_fn, depth_ratio, feature_ratio, avg_fdr = determine_resampling_method(X_train, y_train)
+            resample_fn, depth_ratio, avg_fdr = determine_resampling_method(X_train, y_train)
             
             if resample_fn == resampling_RUS:
                 undersample_count += 1
@@ -493,7 +486,7 @@ for dataset in list_datasets:
             avg_pred_time_fold.append(avg_pred_time)
             
             # Performance Evaluation across Combined Metrics
-            avacc, mgm, mauc = calculate_metrics(y_test, y_pred, averaged_probas, n_classes)
+            avacc, mgm = calculate_metrics(y_test, y_pred, averaged_probas, n_classes)
             q_stat = compute_q_statistic(models, X_test, y_test)
             base_gmean = compute_individual_gmean(models, X_test, y_test)
             base_avacc = compute_individual_avacc(models, X_test, y_test)
@@ -503,13 +496,11 @@ for dataset in list_datasets:
             base_avacc_list.append(base_avacc)
             avacc_scores.append(avacc)
             mgm_scores.append(mgm)
-            mauc_scores.append(mauc)
 
         total_train_time_list.append(np.mean(total_train_time_fold))
         avg_pred_time_list.append(np.mean(avg_pred_time_fold))
         avacc_list.append(np.mean(avacc_scores))
         mgm_list.append(np.mean(mgm_scores))
-        mauc_list.append(np.mean(mauc_scores))
 
     # Calculate final statistical values (Mean & Standard Deviation)
     final_avg_train_time = np.mean(total_train_time_list)
@@ -517,7 +508,6 @@ for dataset in list_datasets:
     
     avacc_mean, avacc_std = np.mean(avacc_list), np.std(avacc_list)
     gmean_mean, gmean_std = np.mean(mgm_list), np.std(mgm_list)
-    mauc_mean, mauc_std = np.mean(mauc_list), np.std(mauc_list)
             
     results.append({
         "Dataset": dataset,
@@ -525,8 +515,6 @@ for dataset in list_datasets:
         "AvAcc_std": round(avacc_std, 4),
         "GMean_mean": round(gmean_mean, 4),
         "GMean_std": round(gmean_std, 4),
-        "MAUC_mean": round(mauc_mean, 4),
-        "MAUC_std": round(mauc_std, 4),
         "Train_time_mean": round(final_avg_train_time, 6),
         "Pred_time_mean": round(final_avg_pred_time, 6),
         "Base_GMean": round(np.mean(base_gmean_list), 4),
@@ -541,7 +529,6 @@ for dataset in list_datasets:
           f"Q-Stat: {results[-1]['Q_Statistic']} | "
           f"AvAcc: {results[-1]['AvAcc_mean']} ± {results[-1]['AvAcc_std']} | "
           f"G-Mean: {results[-1]['GMean_mean']} ± {results[-1]['GMean_std']} | "
-          f"MAUC: {results[-1]['MAUC_mean']} ± {results[-1]['MAUC_std']} | "
           f"Train_time: {results[-1]['Train_time_mean']} | "
           f"Pred_time: {results[-1]['Pred_time_mean']}")
     
