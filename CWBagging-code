@@ -8,7 +8,7 @@ Main characteristics:
 - Custom bootstrap sampling
 - Random oversampling during early ensemble iterations
 - Class-weighted soft voting
-- Evaluation using AvAcc, G-Mean, and MAUC
+- Evaluation using AvAcc and G-Mean
 - Runtime measurement
 
 """
