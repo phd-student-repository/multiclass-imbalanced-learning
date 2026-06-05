@@ -214,7 +214,7 @@ def compute_fdr_OVO(X, y):
 
         fdr_features.append(np.mean(fdr_pairwise))
 
-    return np.median(fdr_features)
+    return np.mean(fdr_features)
 
 
 def determine_resampling_method(X, y):
