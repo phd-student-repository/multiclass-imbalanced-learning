@@ -11,7 +11,6 @@ Main characteristics:
 - Evaluation using AvAcc, G-Mean, and MAUC
 - Runtime measurement
 
-Author: Muhammad Fachrie
 """
 
 import numpy as np
